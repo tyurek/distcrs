@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  distcrs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./src:/root/distcrs/src
