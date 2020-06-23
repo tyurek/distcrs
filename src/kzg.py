@@ -15,10 +15,10 @@ class Blockchain:
     async def run(self):
         while True:
             sender, msg = await self.recv()
-            await self.process_msg(msg, sender)
+            self.process_msg(msg, sender)
             if msg[0] == "BREAK":
                 break
-    async def process_msg(self, msg, sender):
+    def process_msg(self, msg, sender):
         if msg[0] == "GET":
             blocknum = msg[1]
             self.send(sender, self.blocks[blocknum])
@@ -47,10 +47,11 @@ class KZGPlayer:
                 sender, crs = await self.recv()
                 alphapow = 1
                 print(len(crs))
+                newcrs = [None]*len(crs)
                 for j in range(len(crs)):
-                    crs[j] *= alphapow
+                    newcrs[j] = crs[j] * alphapow
                     alphapow *= self.alpha_i
-                self.send(0, ["SET", crs])
+                self.send(0, ["SET", newcrs])
                 break
             await asyncio.sleep(.5)
                 
@@ -69,7 +70,7 @@ if __name__ == "__main__":
     #asyncio.run(bc.run())
     alphas = [2,4,16]
     crs = [1,1,1]
-    sends[1](0, ["SET",alphas])
+    sends[1](0, ["SET",crs])
     #sends[1](0, ["SET","block1"])
     #sends[1](0, ["PRINT"])
     #sends[1](0, ["BREAK"])
