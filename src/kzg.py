@@ -8,6 +8,13 @@ from router import TestRouter
 from pickle import dumps
 from hashlib import sha256
 
+def print_exception_callback(future):
+    if future.done():
+        ex = future.exception()
+        if ex is not None:
+            raise ex
+
+
 def random_fp():
     return Fp(random.randint(0, Fp.p-1))
 
@@ -39,8 +46,6 @@ def VerifyDL(pair, pi):
     R, u = pi
     g, h = pair
     c = hash_to_fp(dumps(R))
-    print(type(u))
-    print(type(c))
     return g*u == R + h*c
 
 class Blockchain:
@@ -57,10 +62,14 @@ class Blockchain:
     def process_msg(self, msg, sender):
         if msg[0] == "GET":
             blocknum = msg[1]
-            self.send(sender, self.blocks[blocknum])
+            if blocknum == "ALL":
+                self.send(sender, self.blocks)
+            else:
+                self.send(sender, self.blocks[blocknum])
         if msg[0] == "SET":
             self.blocks.append(msg[1])
-            print(self.blocks)
+            #print(self.blocks)
+            print("block " + str(len(self.blocks)-1) + " posted")
         if msg[0] == "LEN":
             self.send(sender, len(self.blocks))
             #print(len(self.blocks))
@@ -113,17 +122,15 @@ class KZGPlayer:
     async def run(self):
         while True:
             msg = await self.bc_len()
-            #self.send(0, ["LEN"])
-            #sender, msg = await self.recv()
-            #todo add sender check
             if msg == self.i:
-                #self.send(0, ["GET", self.i - 1])
-                #sender, crs = await self.recv()
-                crs = await self.bc_get_block(self.i-1)
-                newcrs = inc_kzg(self.alpha_i)
-                print(ver_integ_kzg(newcrs))
-                self.bc_post_block(newcrs)
-                #self.send(0, ["SET", newcrs])
+                _, crs = await self.bc_get_block(self.i-1)
+                newcrs = inc_kzg(crs, self.alpha_i)
+                blockchain = await self.bc_get_block("ALL")
+                print(verify_chain_kzg(blockchain))
+                pi = prove_knowledge_kzg([crs[1], newcrs[1]], self.alpha_i)
+                self.bc_post_block([pi,newcrs])
+                #Wait for message to be posted before terminating (maybe blockchain posts can have an awaitable ACK from the chain?)
+                await asyncio.sleep(.2)
                 break
             await asyncio.sleep(.5)
 
@@ -134,7 +141,7 @@ def init_kzg(alpha, crslen):
         crs.append(crs[-1] * alpha)
     return crs
 
-def inc_kzg(alpha_i):
+def inc_kzg(crs, alpha_i):
     #note: creating a new crs copy here to avoid bugs
     alphapow = 1
     newcrs = [None]*len(crs)
@@ -143,26 +150,51 @@ def inc_kzg(alpha_i):
         alphapow *= alpha_i
     return newcrs
 
-def ver_integ_kzg(crs):
+def ver_integrity_kzg(crs):
     pair = [crs[0], crs[1]]
     return SameRatioSeqSym(crs, pair)
 
+def ver_knowledge_kzg(pair, proof):
+    return VerifyDL(pair, proof)
+
+def prove_knowledge_kzg(crs, alpha):
+    return ProveDL(crs[0:2], alpha)
+
+#This technically only needs the second element of each step along with the proofs
+#it only needs the full crs for the last step
+def verify_chain_kzg(blockchain):
+    #part 1: ensure final scructure is correct
+    _, lastcrs = blockchain[-1]
+    if not ver_integrity_kzg(lastcrs):
+        return False
+    #part 2: ensure each block was built off of the last
+    for i in range(1, len(blockchain)):
+        proof, crs = blockchain[i]
+        _, crsold = blockchain[i-1]
+        pair = [crsold[1], crs[1]]
+        if not ver_knowledge_kzg(pair, proof):
+            return False
+    return True
+
 if __name__ == "__main__":
-    n = 3
-    crslen = 2
+    numplayers = 3
+    crslen = 5
+    n = numplayers+1
     sends, recvs = get_routing(n)
     bcfuncs = gen_blockchain_funcs(sends, recvs)
     bc = Blockchain(sends[0], recvs[0])
     loop = asyncio.get_event_loop()
     #asyncio.run(bc.run())
-    alphas = [random_fp() for i in range(3)]
+    alphas = [random_fp() for i in range(n)]
     #assume a known alpha is used to initiate the CRS
     crs = init_kzg(alphas[0], crslen)
-    sends[1](0, ["SET",crs])
-    #sends[1](0, ["SET","block1"])
-    #sends[1](0, ["PRINT"])
-    #sends[1](0, ["BREAK"])
+    #A proof is unnecessary for the first block as alpha is public
+    pi = None
+    sends[1](0, ["SET",[pi, crs]])
     bctask = loop.create_task(bc.run())
     players = [KZGPlayer(i, alphas[i], sends[i], recvs[i], bcfuncs[i]) for i in range(1,n)]
     playertasks = [loop.create_task(player.run()) for player in players]
-    loop.run_forever()
+    for task in [bctask] + playertasks:
+        task.add_done_callback(print_exception_callback)
+    #loop.run_forever()
+    loop.run_until_complete(playertasks[-1])
