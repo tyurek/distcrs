@@ -94,7 +94,10 @@ class SimpleRouter(Router):
             dest_id (int): Player receiving message
             message (object): Message to send to other player
         """
-        self._queues[dest_id].put_nowait((player_id, message))
+        try:
+            self._queues[dest_id].put_nowait((player_id, message))
+        except IndexError:
+            pass
 
 
 
