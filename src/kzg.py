@@ -7,6 +7,8 @@ from functools import partial
 from router import TestRouter
 from pickle import dumps
 from hashlib import sha256
+from abc import ABC, abstractmethod
+
 
 def print_exception_callback(future):
     if future.done():
@@ -136,10 +138,10 @@ def gen_blockchain_funcs(sends, recvs):
     outs = [[get_lens[i], get_blocks[i], post_blocks[i]] for i in range(n)] 
     return outs
 
-class KZGPlayer:
-    def __init__(self, i, alpha_i, send, recv, bcfuncs, options=None):
+class Player(ABC):
+    def __init__(self, i, trapdoors_i, send, recv, bcfuncs, options=None):
         self.i = i
-        self.alpha_i = alpha_i
+        self.trapdoors_i = trapdoors_i
         self.send = send
         self.recv = recv
         self.bc_len, self.bc_get_block, self.bc_post_block = bcfuncs
@@ -151,6 +153,31 @@ class KZGPlayer:
             }
         self.role = options['role']
         self.mode = options['mode']
+
+    @abstractmethod
+    def inc_crs(crs, trapdoors):
+        pass
+
+    @abstractmethod
+    def ver_integrity(crs):
+        pass
+
+    @abstractmethod
+    def ver_knowledge(oldcrs, newcrs, proofs):
+        pass
+
+    @abstractmethod
+    def prove_knowledge(old_comms, new_comms, trapdoors):
+        pass
+
+    @abstractmethod
+    def inc_knowledge_proof(proofs, alpha):
+        pass
+
+    @abstractmethod
+    def verify_chain(blockchain):
+        pass
+
     async def recv_inc(self):
         while True:
             sender, msg = await self.recv()
@@ -165,31 +192,84 @@ class KZGPlayer:
                 msg = await self.bc_len()
                 if msg == self.i:
                     _, crs = await self.bc_get_block(self.i-1)
-                    newcrs = inc_kzg(crs, self.alpha_i)
+                    #todo: wouldn't mind a cleaner way of doing this
+                    newcrs = self.__class__.inc_crs(crs, self.trapdoors_i)
                     blockchain = await self.bc_get_block("ALL")
-                    print(verify_chain_kzg(blockchain))
-                    pi = prove_knowledge_kzg(crs[1], newcrs[1], self.alpha_i)
+                    print(self.__class__.verify_chain(blockchain))
+                    pi = self.__class__.prove_knowledge(crs, newcrs, self.trapdoors_i)
                     await self.bc_post_block([pi,newcrs])
                     break
                 await asyncio.sleep(.5)
+
         if self.mode == 'optimistic':
             proofs, crs = await self.recv_inc()
-            newcrs = inc_kzg(crs, self.alpha_i)
+            newcrs = self.__class__.inc_crs(crs, self.trapdoors_i)
             if proofs is None:
-                newproof = prove_knowledge_kzg(crs[1], newcrs[1], self.alpha_i)
+                newproof = self.__class__.prove_knowledge(crs, newcrs, self.trapdoors_i)
             else:
-                newproof = inc_knowledge_proof_kzg(proofs, self.alpha_i)
+                newproof = self.__class__.inc_knowledge_proof(proofs, self.trapdoors_i)
             if self.role == 'checkpoint':
                 blockchain = await self.bc_get_block(-1)
                 newblock = [newproof, newcrs]
                 #print(verify_chain_kzg(blockchain + [newblock]))
-                print(verify_chain_kzg([blockchain, newblock]))
+                print(self.__class__.verify_chain([blockchain, newblock]))
                 await self.bc_post_block(newblock)
                 self.send(self.i+1, ["INC", None, newcrs])
             elif self.role == 'passthrough':
                 self.send(self.i+1, ["INC", newproof, newcrs])
                 
-                
+class KZGPlayer(Player):
+    @staticmethod
+    def inc_crs(crs, alpha_i):
+        #note: creating a new crs copy here to avoid bugs
+        alphapow = 1
+        newcrs = [None]*len(crs)
+        for j in range(len(crs)):
+            newcrs[j] = crs[j] * alphapow
+            alphapow *= alpha_i
+        return newcrs
+
+    def ver_integrity(crs):
+        pair = [crs[0], crs[1]]
+        return SameRatioSeqSym(crs, pair)
+
+    #verify a chain of knoledge proofs
+    #here a proof is really [new g^alpha, DLProof]
+    def ver_knowledge(oldcrs, newcrs, proofs):
+        if proofs[-1][0] != newcrs[1]:
+            return False
+        lastbase = oldcrs[1]
+        for proof in proofs:
+            if not VerifyDL([lastbase, proof[0]], proof[1]):
+                return False
+            lastbase = proof[0]
+        return True
+
+    def prove_knowledge(oldcrs, newcrs, alpha):
+        old_g_alpha, new_g_alpha = [oldcrs[1], newcrs[1]]
+        #start a list of proofs (which are themselves lists) for easy appending later
+        return [ [new_g_alpha, ProveDL([old_g_alpha, new_g_alpha], alpha)] ]
+    
+    def inc_knowledge_proof(proofs, alpha):
+        old_g_alpha = proofs[-1][0]
+        new_g_alpha = old_g_alpha * alpha
+        proofs.append([new_g_alpha, ProveDL([old_g_alpha, new_g_alpha], alpha)])
+        return proofs
+    
+    #This technically only needs the second element of each step along with the proofs
+    #it only needs the full crs for the last step
+    def verify_chain(blockchain):
+        #part 1: ensure final scructure is correct
+        _, lastcrs = blockchain[-1]
+        if not KZGPlayer.ver_integrity(lastcrs):
+            return False
+        #part 2: ensure each block was built off of the last
+        for i in range(1, len(blockchain)):
+            proof, crs = blockchain[i]
+            _, crsold = blockchain[i-1]
+            if not KZGPlayer.ver_knowledge(crsold, crs, proof):
+                return False
+        return True
 
 def init_kzg(alpha, crslen):
     assert crslen > 1
@@ -198,77 +278,124 @@ def init_kzg(alpha, crslen):
         crs.append(crs[-1] * alpha)
     return crs
 
-def inc_kzg(crs, alpha_i):
-    #note: creating a new crs copy here to avoid bugs
-    alphapow = 1
-    newcrs = [None]*len(crs)
-    for j in range(len(crs)):
-        newcrs[j] = crs[j] * alphapow
-        alphapow *= alpha_i
-    return newcrs
+class BabySNARKPlayer(Player):
+    @staticmethod
+    def inc_crs(crs, trapdoors_i):
+        #note: creating a new crs copy here to avoid bugs
+        g_gamma, g_gammabeta, kzg, bkzg = crs
+        alpha_i, beta_i, gamma_i = trapdoors_i
+        alphapow = 1
+        newkzg = [None]*len(kzg)
+        newbkzg = [None]*len(kzg)
+        for j in range(len(kzg)):
+            newkzg[j] = kzg[j] * alphapow
+            newbkzg[j] = bkzg[j] * (alphapow * beta_i)
+            alphapow *= alpha_i
+        return [g_gamma * gamma_i, g_gammabeta * (gamma_i * beta_i), newkzg, newbkzg]
 
-def ver_integrity_kzg(crs):
-    pair = [crs[0], crs[1]]
-    return SameRatioSeqSym(crs, pair)
+    def ver_integrity(crs):
+        g_gamma, g_gammabeta, kzg, bkzg = crs
+        alpha_pair = [G, kzg[1]]
+        beta_pair = [G, bkzg[0]]
+        out = SameRatioSeqSym(kzg, alpha_pair)
+        out &= SameRatioSym([g_gamma, g_gammabeta], beta_pair)
+        out &= SameRatioSym([kzg[1], bkzg[1]], beta_pair)
+        out &= SameRatioSeqSym(bkzg, alpha_pair)
+        return out
 
-#verify a chain of knoledge proofs
-#here a proof is really [new g^alpha, DLProof]
-def ver_knowledge_kzg(oldcrs, newcrs, proofs):
-    if proofs[-1][0] != newcrs[1]:
-        return False
-    lastbase = oldcrs[1]
-    for proof in proofs:
-        if not VerifyDL([lastbase, proof[0]], proof[1]):
+    #verify a chain of knoledge proofs
+    #here a proof is really [[new g^alpha, new g^beta, new g^gamma], DLProofs]
+    def ver_knowledge(oldcrs, newcrs, proofs):
+        if proofs[-1][0] != [newcrs[2][1], newcrs[3][0], newcrs[0]]:
             return False
-        lastbase = proof[0]
-    return True
+        lastbases = [oldcrs[2][1], oldcrs[3][0], oldcrs[0]]
+        for proof in proofs:
+            for i in range(3):
+                if not VerifyDL([lastbases[i], proof[0][i]], proof[1][i]):
+                    return False
+            lastbases = proof[0]
+        return True
 
-def prove_knowledge_kzg(old_g_alpha, new_g_alpha, alpha):
-    #start a list of proofs (which are themselves lists) for easy appending later
-    return [ [new_g_alpha, ProveDL([old_g_alpha, new_g_alpha], alpha)] ]
+    def prove_knowledge(oldcrs, newcrs, trapdoors_i):
+        old_comms = [oldcrs[2][1], oldcrs[3][0], oldcrs[0]]
+        new_comms = [newcrs[2][1], newcrs[3][0], newcrs[0]]
+        #alpha_i, beta_i, gamma_i = trapdoors_i
+        DLProofs = [ProveDL([old_comms[i], new_comms[i]], trapdoors_i[i]) for i in range(3)]
+        #start a list of proofs (which are themselves lists) for easy appending later
+        return [ [new_comms, DLProofs] ]
+    
+    def inc_knowledge_proof(proofs, trapdoors_i):
+        old_comms = proofs[-1][0]
+        old_g_alpha, old_g_beta, old_g_gamma = old_comms
+        alpha_i, beta_i, gamma_i = trapdoors_i
 
-def inc_knowledge_proof_kzg(proofs, alpha):
-    old_g_alpha = proofs[-1][0]
-    new_g_alpha = old_g_alpha * alpha
-    proofs.append([new_g_alpha, ProveDL([old_g_alpha, new_g_alpha], alpha)])
-    return proofs
+        new_g_alpha = old_g_alpha * alpha_i
+        new_g_beta = old_g_beta * beta_i
+        new_g_gamma = old_g_gamma * gamma_i
+        new_comms = [new_g_alpha, new_g_beta, new_g_gamma]
 
-#This technically only needs the second element of each step along with the proofs
-#it only needs the full crs for the last step
-def verify_chain_kzg(blockchain):
-    #part 1: ensure final scructure is correct
-    _, lastcrs = blockchain[-1]
-    if not ver_integrity_kzg(lastcrs):
-        return False
-    #part 2: ensure each block was built off of the last
-    for i in range(1, len(blockchain)):
-        proof, crs = blockchain[i]
-        _, crsold = blockchain[i-1]
-        if not ver_knowledge_kzg(crsold, crs, proof):
+        DLProofs = [ProveDL([old_comms[i], new_comms[i]], trapdoors_i[i]) for i in range(3)]
+        proofs.append([new_comms, DLProofs])
+        return proofs
+    
+    #This technically only needs the second element of each step along with the proofs
+    #it only needs the full crs for the last step
+    def verify_chain(blockchain):
+        #part 1: ensure final scructure is correct
+        _, lastcrs = blockchain[-1]
+        if not BabySNARKPlayer.ver_integrity(lastcrs):
             return False
-    return True
+        #part 2: ensure each block was built off of the last
+        for i in range(1, len(blockchain)):
+            proof, crs = blockchain[i]
+            _, crsold = blockchain[i-1]
+            if not BabySNARKPlayer.ver_knowledge(crsold, crs, proof):
+                return False
+        return True
+
+def init_babysnark(trapdoors, crslen):
+    alpha, beta, gamma = trapdoors
+    assert crslen > 1
+    kzg = [G]
+    bkzg = [G * beta]
+    for i in range(crslen-1):
+        kzg.append(kzg[-1] * alpha)
+        bkzg.append(bkzg[-1] * alpha)
+    crs = [G * gamma, G * (gamma*beta), kzg, bkzg]
+    return crs
 
 if __name__ == "__main__":
     numplayers = 9
     crslen = 5
     test = 'robust'
     test = 'optimistic'
+    crstype = "KZG"
+    crstype = "BabySNARK"
     
     n = numplayers+1
     sends, recvs = get_routing(n)
     bcfuncs = gen_blockchain_funcs(sends, recvs)
     bc = Blockchain(sends[0], recvs[0])
     loop = asyncio.get_event_loop()
-    alphas = [random_fp() for i in range(n)]
 
-    #assume a known alpha is used to initiate the CRS
-    crs = init_kzg(alphas[0], crslen)
-    #A proof is unnecessary for the first block as alpha is public
+    if crstype == "KZG":
+        trapdoors = [random_fp() for i in range(n)]
+        #assume a known alpha is used to initiate the CRS
+        crs = init_kzg(trapdoors[0], crslen)
+        TestPlayer = KZGPlayer
+    
+    if crstype == "BabySNARK":
+        #generate a random alpha, beta, gamma for each party
+        trapdoors = [[random_fp() for j in range(3)] for i in range(n)]
+        crs = init_babysnark(trapdoors[0], crslen)
+        TestPlayer = BabySNARKPlayer
+    
+    #A proof is unnecessary for the first block as trapdoors are public
     pi = None
     #set the original CRS
     sends[0](0, ["SET_NOWAIT",[pi, crs]])
-
     bctask = loop.create_task(bc.run())
+
     if test == 'optimistic':
         checkpoint_options = {
             'mode': 'optimistic',
@@ -284,13 +411,15 @@ if __name__ == "__main__":
         for i in range(1,n):
             #make every third player a "checkpoint" (player that posts progress to the blockchain)
             if i%3 == 0:
-                players[i-1] = KZGPlayer(i, alphas[i], sends[i], recvs[i], bcfuncs[i], checkpoint_options)
+                players[i-1] = TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], checkpoint_options)
             else:
-                players[i-1] = KZGPlayer(i, alphas[i], sends[i], recvs[i], bcfuncs[i], passthrough_options)
+                players[i-1] = TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], passthrough_options)
         #send starting message to first player
         sends[0](1, ["INC", None, crs])
+
     if test == 'robust':
-        players = [KZGPlayer(i, alphas[i], sends[i], recvs[i], bcfuncs[i]) for i in range(1,n)]
+        players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i]) for i in range(1,n)]
+
     playertasks = [loop.create_task(player.run()) for player in players]
     for task in [bctask] + playertasks:
         task.add_done_callback(print_exception_callback)
