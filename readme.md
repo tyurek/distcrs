@@ -4,7 +4,7 @@ General purpose goes here
 
 
 # Setup
-To build, simply clone this repo and run `docker-compose install distcrs`
+To build, simply clone this repo and run `docker-compose build distcrs`
 the image can be run with `docker-compose run --rm distcrs` and tests can be performed by navigating to `/src` and running `pytest test.py`. The only requirements for running this repo are a recent version of Python3 and the `py_ecc` and `pytest` pip packages, so this repo can be easily run outside of Docker.
 
 
