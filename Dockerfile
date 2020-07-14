@@ -14,7 +14,7 @@ RUN apt-get update && \
     apt-get -y install curl build-essential unzip cmake git #python3 python3-setuptools python3-pip
 
 #RUN pip3 install py_ecc
-RUN pip install py_ecc
+RUN pip install py_ecc pytest
 
 
 # Define default command

@@ -115,3 +115,7 @@ class TestRouter(SimpleRouter):
         asyncio.get_event_loop().call_later(
             delay, super().send, player_id, dest_id, message
         )
+
+def get_routing(n):
+    router = TestRouter(n)
+    return [router.sends, router.recvs]

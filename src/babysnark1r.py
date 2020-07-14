@@ -5,7 +5,7 @@ G = Group.G
 
 class BabySNARK1rPlayer(Player):
     @staticmethod
-    def inc_crs(crs, trapdoors_i):
+    def inc_crs(crs, trapdoors_i, public=None):
         #note: creating a new crs copy here to avoid bugs
         g_gamma, g_gammabeta, kzg, bkzg = crs
         alpha_i, beta_i, gamma_i = trapdoors_i
@@ -65,7 +65,7 @@ class BabySNARK1rPlayer(Player):
     
     #This technically only needs the second element of each step along with the proofs
     #it only needs the full crs for the last step
-    def verify_chain(blockchain, public):
+    def verify_chain(blockchain, public=None):
         #part 1: ensure final scructure is correct
         _, lastcrs = blockchain[-1]
         if not BabySNARK1rPlayer.ver_integrity(lastcrs):
