@@ -74,6 +74,7 @@ def test_one_round(crstype):
     mytask = loop.create_task(get_block("ALL"))
     blocks = loop.run_until_complete(mytask)
     assert TestPlayer.verify_chain(blocks, public = None)
+    bctask.cancel()
 
 @mark.parametrize("crstype", ["BabySNARK"])
 def test_two_round(crstype):
@@ -166,9 +167,10 @@ def test_two_round(crstype):
     mytask = loop.create_task(get_block("ALL"))
     blocks = loop.run_until_complete(mytask)
     assert TestPlayer2.verify_chain(blocks, public)
+    bctask.cancel()
 
 if __name__ == "__main__":
     #if you want to debug any tests, just run them here
-    #test_one_round("KZG")
-    test_two_round("BabySNARK")
+    test_one_round("KZG")
+    #test_two_round("BabySNARK")
     pass
