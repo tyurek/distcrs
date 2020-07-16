@@ -26,3 +26,11 @@ We envision the use of a blockchain as a means of decentralized coordination, ho
 
 ## Networking
 For the purposes of this demo, networking is abstracted away and is simulated with Asyncio Queues (as all players are run on one thread). As with blockchain interaction, player to player interaction is simulated with send and receive functions that can easily be replaced with network code for distributed interaction. 
+
+# Optimistic Execution
+One of the main features of this codebase is the use of optimistic execution. Rather than requiring that every player acts as a full node that verifies the entire CRS execution up until that point, the majority of players may act optimistically and assume the CRS they receive is correct, only needing to calculate CRS updates and a few discrete log proofs.  Players who do behave incorrectly will eventually be discovered and some work may be wasted, but we believe this tradeoff is likely worth making (and players who are concerned about wasted work are free to act as validators).
+
+Todo: add description of pipelining when that's finished
+
+# Other Disclaimers
+This repo is intended to be a proof of concept that is easy to run. Consequently, it is not at all optimized and in fact symmetric pairing groups implemented in pure python are incredibly slow. To achieve better performance, we would recommend using an asymmetric pairing group implemented in a fast language such as Rust.
