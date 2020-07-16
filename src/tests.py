@@ -4,24 +4,21 @@ G = Group.G
 GT = Group.GT
 import asyncio
 from functools import partial
-from router import TestRouter, get_routing
+from router import get_routing
 from blockchain import Blockchain, gen_blockchain_funcs
 from babysnark1r import BabySNARK1rPlayer, init_babysnark1r
-from babysnark import BabySNARKr1Player, BabySNARKr2Player, init_babysnark
-from kzg import KZGPlayer, init_kzg
+from babysnark import BabySNARKr1Player, BabySNARKr2Player, init_babysnark, beacon_babysnark
+from kzg import KZGPlayer, init_kzg, beacon_kzg
 from pytest import mark
 
 @mark.parametrize("crstype", ["KZG", "BabySNARK1r"])
 def test_one_round(crstype):
     numplayers = 9
     crslen = 5
-    test = 'robust'
-    test = 'optimistic'
     
     n = numplayers+1
     sends, recvs = get_routing(n)
     bcfuncs = gen_blockchain_funcs(sends, recvs)
-    bc = Blockchain(sends[0], recvs[0])
     loop = asyncio.get_event_loop()
 
     if crstype == "KZG":
@@ -29,6 +26,7 @@ def test_one_round(crstype):
         #assume a known alpha is used to initiate the CRS
         crs = init_kzg(trapdoors[0], crslen)
         TestPlayer = KZGPlayer
+        bc = Blockchain(sends[0], recvs[0], beacon=beacon_kzg)
     
     if crstype == "BabySNARK1r":
         #generate a random alpha, beta, gamma for each party
@@ -41,30 +39,17 @@ def test_one_round(crstype):
     #set the original CRS
     sends[0](0, ["SET_NOWAIT",[pi, crs]])
     bctask = loop.create_task(bc.run())
-
-    if test == 'optimistic':
-        checkpoint_options = {
-            'mode': 'optimistic',
-            'role': 'checkpoint',
-            'pl_thresh': None
-        }
-        passthrough_options = {
-            'mode': 'optimistic',
-            'role': 'passthrough',
-            'pl_thresh': None
-        }
-        players = [None] * numplayers
-        for i in range(1,n):
-            #make every third player a "checkpoint" (player that posts progress to the blockchain)
-            if i%3 == 0:
-                players[i-1] = TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], checkpoint_options)
-            else:
-                players[i-1] = TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], passthrough_options)
-        #send starting message to first player
-        sends[0](1, ["INC", None, crs])
-
-    if test == 'robust':
-        players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i]) for i in range(1,n)]
+    mysleep = loop.create_task(asyncio.sleep(.5))
+    loop.run_until_complete(mysleep)
+    test = None
+    options = [{'roles' : ['contributor']} for i in range(numplayers)]
+    players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1]) for i in range(1,n)]
+    for i in range(3, numplayers, 3):
+        players[i].roles += ["checkpoint"]
+    players[numplayers // 2].roles += ["validator"]
+    players[-1].roles += ["roundender"]
+    #send starting message to first player
+    sends[0](1, ["INC", None, crs])
 
     playertasks = [loop.create_task(player.run()) for player in players]
     for task in [bctask] + playertasks:
@@ -86,9 +71,9 @@ def test_two_round(crstype):
     test = 'optimistic'
     
     n = numr1players+numr2players+1
+    numplayers = n-1
     sends, recvs = get_routing(n)
     bcfuncs = gen_blockchain_funcs(sends, recvs)
-    bc = Blockchain(sends[0], recvs[0])
     loop = asyncio.get_event_loop()
     public = {}
 
@@ -103,62 +88,31 @@ def test_two_round(crstype):
         crs = init_babysnark(trapdoors[0], crslen)
         TestPlayer1 = BabySNARKr1Player
         TestPlayer2 = BabySNARKr2Player
+        bc = Blockchain(sends[0], recvs[0], beacon=beacon_babysnark)
     
     #A proof is unnecessary for the first block as trapdoors are public
     pi = None
     #set the original CRS
     sends[0](0, ["SET_NOWAIT",[pi, crs]])
     bctask = loop.create_task(bc.run())
+    mysleep = loop.create_task(asyncio.sleep(.5))
+    loop.run_until_complete(mysleep)
 
-
-    roundstarter_options = {
-        'mode': "N/A",
-        'role': 'roundstarter',
-        'pl_thresh': None
-    }
-    if test == 'optimistic':
-        checkpoint_options = {
-            'mode': 'optimistic',
-            'role': 'checkpoint',
-            'pl_thresh': None
-        }
-        passthrough_options = {
-            'mode': 'optimistic',
-            'role': 'passthrough',
-            'pl_thresh': None
-        }
-        players = [None] * (numr1players + numr2players)
-        for i in range(1,numr1players+1):
-            #make every third player a "checkpoint" (player that posts progress to the blockchain)
-            if i%3 == 0:
-                players[i-1] = TestPlayer1(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], checkpoint_options)
-            else:
-                players[i-1] = TestPlayer1(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], passthrough_options)
-        i = numr1players
-        players[numr1players+1] = TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], roundstarter_options, public)
-        for i in range(numr1players+1, numr1players+numr2players+1):
-            if i%3 == 0:
-                players[i-1] = TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], checkpoint_options, public)
-            else:
-                players[i-1] = TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], passthrough_options, public)
-        #send starting message to first player
-        sends[0](1, ["INC", None, crs])
-
-    if test == 'robust':
-        #todo: fix this
-        robust_options = {
-            'mode': 'robust',
-            'role': 'N/A',
-            'pl_thresh': None
-        }
-        players = [None] * (numr1players + numr2players)
-        for i in range(1,numr1players+1):
-            players[i-1] = TestPlayer1(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], robust_options)
-        i = numr1players
-        players[numr1players+1] = TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], roundstarter_options, public)
-        for i in range(numr1players+1, numr1players+numr2players+1):
-            players[i-1] = TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], robust_options, public)
-
+    options = [{'roles' : ['contributor']} for i in range(numplayers)]
+    players = [None] * numplayers
+    r1players = [TestPlayer1(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1]) for i in range(1,numr1players+1)]
+    r2players = [TestPlayer2(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1], public) for i in range(numr1players+1,numplayers+1)]
+    r1players[numr1players // 2].roles += ["validator"]
+    r2players[numr2players // 2].roles += ["validator"]
+    r2players[0].roles += ["roundstarter"]
+    r1players[-1].roles += ["roundender"]
+    r2players[-1].roles += ["roundender"]
+    players = r1players + r2players
+    for i in range(3, numplayers, 3):
+        players[i].roles += ["checkpoint"]
+    
+    #send starting message to first player
+    sends[0](1, ["INC", None, crs])
     playertasks = [loop.create_task(player.run()) for player in players]
     for task in [bctask] + playertasks:
         task.add_done_callback(print_exception_callback)
@@ -171,6 +125,6 @@ def test_two_round(crstype):
 
 if __name__ == "__main__":
     #if you want to debug any tests, just run them here
-    test_one_round("KZG")
-    #test_two_round("BabySNARK")
+    #test_one_round("KZG")
+    test_two_round("BabySNARK")
     pass

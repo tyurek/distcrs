@@ -41,16 +41,22 @@ def SameRatioSeqSym(sequence, pair):
         right += sequence[i] * blinds[i]
     return Group.pair(pair[0],left) == Group.pair(pair[1], right)
 
+class DLProof:
+    def __init__(self, R,u):
+        self.R, self.u = R,u
+
 def ProveDL(pair, s):
     r = random_fp()
     g, h = pair
     R = g*r
     c = hash_to_fp(dumps(R))
     u = r + c*s
-    return [R,u]
+    return DLProof(R,u)
 
 def VerifyDL(pair, pi):
-    R, u = pi
+    if type(pi) is Fp:
+        return pair[0] * pi == pair[1]
+    R, u = pi.R, pi.u
     g, h = pair
     c = hash_to_fp(dumps(R))
     return g*u == R + h*c

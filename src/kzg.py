@@ -3,11 +3,10 @@ G = Group.G
 GT = Group.GT
 import asyncio
 from player import Player
-from util import SameRatioSym, SameRatioSeqSym, ProveDL, VerifyDL
+from util import SameRatioSym, SameRatioSeqSym, ProveDL, VerifyDL, random_fp
 
                 
 class KZGPlayer(Player):
-    @staticmethod
     def inc_crs(crs, alpha_i, public=None):
         #note: creating a new crs copy here to avoid bugs
         alphapow = 1
@@ -16,6 +15,9 @@ class KZGPlayer(Player):
             newcrs[j] = crs[j] * alphapow
             alphapow *= alpha_i
         return newcrs
+
+    def init_round(crs, public):
+        alpha = random_fp()
 
     def ver_integrity(crs, public=None):
         pair = [crs[0], crs[1]]
@@ -66,3 +68,10 @@ def init_kzg(alpha, crslen):
         crs.append(crs[-1] * alpha)
     return crs
 
+def beacon_kzg(block):
+    _, crs = block
+    alpha = random_fp()
+    newcrs = KZGPlayer.inc_crs(crs, alpha)
+    proof = [[newcrs[1], alpha]]
+    newblock = [proof, newcrs]
+    return newblock

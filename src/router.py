@@ -95,13 +95,16 @@ class SimpleRouter(Router):
             message (object): Message to send to other player
         """
         try:
-            self._queues[dest_id].put_nowait((player_id, message))
+            if dest_id == "self":
+                self._queues[player_id].put_nowait((message[0], message[1]))
+            else:
+                self._queues[dest_id].put_nowait((player_id, message))
         except IndexError:
             pass
 
 
 
-class TestRouter(SimpleRouter):
+class DelayRouter(SimpleRouter):
     def __init__(self, num_parties, max_delay=0.005, seed=None):
         super().__init__(num_parties)
 
@@ -117,5 +120,5 @@ class TestRouter(SimpleRouter):
         )
 
 def get_routing(n):
-    router = TestRouter(n)
+    router = DelayRouter(n)
     return [router.sends, router.recvs]
