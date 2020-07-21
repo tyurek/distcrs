@@ -7,9 +7,9 @@ import pytest
 from functools import partial
 from router import get_routing
 from blockchain import Blockchain, gen_blockchain_funcs
-from babysnark1r import BabySNARK1rPlayer, init_babysnark1r
-from babysnark import BabySNARKr1Player, BabySNARKr2Player, init_babysnark, beacon_babysnark
-from kzg import KZGPlayer, init_kzg, beacon_kzg
+from SRS.babysnark1r import BabySNARK1rPlayer, init_babysnark1r
+from SRS.babysnark import BabySNARKr1Player, BabySNARKr2Player, init_babysnark, beacon_babysnark
+from SRS.kzg import KZGPlayer, init_kzg, beacon_kzg
 from pytest import mark
 from player import ValidationError
 
