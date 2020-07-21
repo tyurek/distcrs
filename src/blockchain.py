@@ -1,5 +1,7 @@
 import asyncio
 from functools import partial
+from hashlib import sha256
+from copy import deepcopy
 
 class Blockchain:
     def __init__(self, send, recv, beacon=None):
@@ -16,20 +18,24 @@ class Blockchain:
             self.process_msg(msg, sender)
             if msg[0] == "BREAK":
                 break
+
     def process_msg(self, msg, sender):
         if msg[0] == "GET":
             blocknum = msg[1]
             if blocknum == "ALL":
-                self.send(sender, self.blocks)
+                self.send(sender, deepcopy(self.blocks))
             else:
-                self.send(sender, self.blocks[blocknum])
+                self.send(sender, deepcopy(self.blocks[blocknum]))
         if msg[0] == "SET":
-            self.blocks.append(msg[1])
+            blockclone = deepcopy(msg[1])
+            self.blocks.append(blockclone)
             self.send(sender, 'ACK')
             #print(self.blocks)
             print("block " + str(len(self.blocks)-1) + " posted")
+            #self.print_block_hashes()
         if msg[0] == "SET_NOWAIT":
-            self.blocks.append(msg[1])
+            blockclone = deepcopy(msg[1])
+            self.blocks.append(blockclone)
             print("block " + str(len(self.blocks)-1) + " posted")
         if msg[0] == "LEN":
             self.send(sender, len(self.blocks))
@@ -39,7 +45,11 @@ class Blockchain:
             self.send(sender, 'BEACONACK')
             print("block " + str(len(self.blocks)-1) + " posted (beacon)")
         if msg[0] == "PRINT":
-            print(self.blocks)               
+            print(self.blocks)
+
+    def print_block_hashes(self):
+        for i in range(len(self.blocks)):
+            print("block " + str(i) + ": " + str(int(sha256(bytes(str(self.blocks[i]), 'utf-8')).hexdigest(), 16)))
 
 
 def gen_blockchain_funcs(sends, recvs):

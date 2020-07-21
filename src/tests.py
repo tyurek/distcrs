@@ -3,6 +3,7 @@ from ssbls12 import Fp, Poly, Group
 G = Group.G
 GT = Group.GT
 import asyncio
+import pytest
 from functools import partial
 from router import get_routing
 from blockchain import Blockchain, gen_blockchain_funcs
@@ -10,8 +11,10 @@ from babysnark1r import BabySNARK1rPlayer, init_babysnark1r
 from babysnark import BabySNARKr1Player, BabySNARKr2Player, init_babysnark, beacon_babysnark
 from kzg import KZGPlayer, init_kzg, beacon_kzg
 from pytest import mark
+from player import ValidationError
 
-@mark.parametrize("crstype", ["KZG", "BabySNARK1r"])
+
+@mark.parametrize("crstype", ["KZG"])
 def test_one_round(crstype):
     numplayers = 9
     crslen = 5
@@ -41,7 +44,7 @@ def test_one_round(crstype):
     bctask = loop.create_task(bc.run())
     mysleep = loop.create_task(asyncio.sleep(.5))
     loop.run_until_complete(mysleep)
-    test = None
+
     options = [{'roles' : ['contributor']} for i in range(numplayers)]
     players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1]) for i in range(1,n)]
     for i in range(3, numplayers, 3):
@@ -67,9 +70,7 @@ def test_two_round(crstype):
     numr2players = 6
     numpolys = 3
     crslen = 5
-    test = 'robust'
-    test = 'optimistic'
-    
+
     n = numr1players+numr2players+1
     numplayers = n-1
     sends, recvs = get_routing(n)
@@ -123,8 +124,59 @@ def test_two_round(crstype):
     assert TestPlayer2.verify_chain(blocks, public)
     bctask.cancel()
 
+def test_kzg_error():
+    numplayers = 9
+    crslen = 5
+    
+    n = numplayers+1
+    sends, recvs = get_routing(n)
+    bcfuncs = gen_blockchain_funcs(sends, recvs)
+    loop = asyncio.get_event_loop()
+
+    trapdoors = [random_fp() for i in range(n)]
+    #assume a known alpha is used to initiate the CRS
+    crs = init_kzg(trapdoors[0], crslen)
+    TestPlayer = KZGPlayer
+    bc = Blockchain(sends[0], recvs[0], beacon=beacon_kzg)
+    
+    #A proof is unnecessary for the first block as trapdoors are public
+    pi = None
+    #set the original CRS
+    sends[0](0, ["SET_NOWAIT",[pi, crs]])
+    bctask = loop.create_task(bc.run())
+    mysleep = loop.create_task(asyncio.sleep(.5))
+    loop.run_until_complete(mysleep)
+
+    class MaliciousKZG(KZGPlayer):
+        def inc_crs(crs, alpha_i, public=None):
+            alphapow = 2
+            newcrs = [None]*len(crs)
+            for j in range(len(crs)):
+                newcrs[j] = crs[j] * alphapow 
+                alphapow *= alpha_i
+            return newcrs
+
+    options = [{'roles' : ['contributor']} for i in range(numplayers)]
+    players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1]) for i in range(1,n)]
+    players[1] = MaliciousKZG(2, trapdoors[2], sends[2], recvs[2], bcfuncs[2], options[1])
+    for i in range(3, numplayers, 3):
+        players[i].roles += ["checkpoint"]
+    players[numplayers // 2].roles += ["validator"]
+    players[-1].roles += ["roundender"]
+    #send starting message to first player
+    sends[0](1, ["INC", None, crs])
+
+    playertasks = [loop.create_task(player.run()) for player in players]
+    for task in [bctask] + playertasks:
+        task.add_done_callback(print_exception_callback)
+    #pass iff the validator node throws a validation error
+    with pytest.raises(ValidationError):
+        loop.run_until_complete(playertasks[numplayers // 2])
+    _ = [t.cancel() for t in playertasks]
+    bctask.cancel()
+
 if __name__ == "__main__":
     #if you want to debug any tests, just run them here
-    #test_one_round("KZG")
-    test_two_round("BabySNARK")
+    test_one_round("KZG")
+    #test_two_round("BabySNARK")
     pass

@@ -1,4 +1,8 @@
 from abc import ABC, abstractmethod
+
+class ValidationError(Exception):
+    pass
+
 class Player(ABC):
     def __init__(self, i, trapdoors_i, send, recv, bcfuncs, options, public=None):
         self.i = i
@@ -55,15 +59,19 @@ class Player(ABC):
             blockchain = await self.bc_get_block("ALL")
             #todo: replace with exception
             if proofs is None:
-                print(self.__class__.verify_chain(blockchain, self.public))
+                proposed_block = []
             else:
-                proposed_block = [proofs, crs]
-                print(self.__class__.verify_chain(blockchain + [proposed_block], self.public))
+                proposed_block = [[proofs, crs]]
+            if not self.__class__.verify_chain(blockchain + proposed_block, self.public):
+                raise ValidationError
         #simultaneous roundender and roundstarter roles is currently undefined behaviour
         if "roundstarter" in self.roles and "roundender" not in self.roles:
-            #todo: add init_round func that returns trapdoors, crs
+            beaconblock = await self.bc_get_block(-1)
+            _, crs = beaconblock
             startblock = self.__class__.init_round(crs, self.public)
             await self.bc_post_block(startblock)
+            _, crs = startblock
+            proofs = None
         if "contributor" in self.roles:
             newcrs = self.__class__.inc_crs(crs, self.trapdoors_i, self.public)
             #todo: condense to one function
@@ -78,6 +86,7 @@ class Player(ABC):
                 await self.bc_post_block(newblock)
             await self.bc_call_beacon()
             newproofs = None
+            newcrs = None
         #note: checkpoint role is redundant for players with the roundender role
         if "checkpoint" in self.roles:
             if newproofs is not None:
