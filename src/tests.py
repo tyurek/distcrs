@@ -64,6 +64,56 @@ def test_one_round(crstype):
     assert TestPlayer.verify_chain(blocks, public = None)
     bctask.cancel()
 
+@mark.parametrize("crstype", ["KZG"])
+def test_pipeline(crstype):
+    numplayers = 9
+    crslen = 5
+    
+    n = numplayers+1
+    sends, recvs = get_routing(n)
+    bcfuncs = gen_blockchain_funcs(sends, recvs)
+    loop = asyncio.get_event_loop()
+
+    if crstype == "KZG":
+        trapdoors = [random_fp() for i in range(n)]
+        #assume a known alpha is used to initiate the CRS
+        crs = init_kzg(trapdoors[0], crslen)
+        TestPlayer = KZGPlayer
+        bc = Blockchain(sends[0], recvs[0], beacon=beacon_kzg)
+    
+    if crstype == "BabySNARK1r":
+        #generate a random alpha, beta, gamma for each party
+        trapdoors = [[random_fp() for j in range(3)] for i in range(n)]
+        crs = init_babysnark1r(trapdoors[0], crslen)
+        TestPlayer = BabySNARK1rPlayer
+    
+    #A proof is unnecessary for the first block as trapdoors are public
+    pi = None
+    #set the original CRS
+    sends[0](0, ["SET_NOWAIT",[pi, crs]])
+    bctask = loop.create_task(bc.run())
+    mysleep = loop.create_task(asyncio.sleep(.5))
+    loop.run_until_complete(mysleep)
+
+    options = [{'roles': ['contributor'], 'pipelined': True, 'pl_pieces': 2} for i in range(numplayers)]
+    players = [TestPlayer(i, trapdoors[i], sends[i], recvs[i], bcfuncs[i], options[i-1]) for i in range(1,n)]
+    for i in range(3, numplayers, 3):
+        players[i].roles += ["checkpoint"]
+    players[numplayers // 2].roles += ["validator"]
+    players[-1].roles += ["roundender"]
+    #send starting message to first player
+    sends[0](1, ["INC", None, crs])
+
+    playertasks = [loop.create_task(player.run()) for player in players]
+    for task in [bctask] + playertasks:
+        task.add_done_callback(print_exception_callback)
+    loop.run_until_complete(playertasks[-1])
+    get_block = bcfuncs[1][1]
+    mytask = loop.create_task(get_block("ALL"))
+    blocks = loop.run_until_complete(mytask)
+    assert TestPlayer.verify_chain(blocks, public = None)
+    bctask.cancel()
+
 @mark.parametrize("crstype", ["BabySNARK"])
 def test_two_round(crstype):
     numr1players = 6
@@ -177,6 +227,7 @@ def test_kzg_error():
 
 if __name__ == "__main__":
     #if you want to debug any tests, just run them here
-    test_one_round("KZG")
+    #test_one_round("KZG")
     #test_two_round("BabySNARK")
+    test_pipeline("KZG")
     pass
